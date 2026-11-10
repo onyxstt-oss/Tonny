@@ -1,0 +1,44 @@
+name: Compilar APK Android (Apple Music YT)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar codigo del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17 para Android Gradle
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.22.0'
+          channel: 'stable'
+
+      - name: Generar estructura Android, inyectar permisos y compilar APK
+        run: |
+          if [ -d "mobile_app_flutter" ]; then
+            cd mobile_app_flutter
+          fi
+          flutter create . --platforms android --project-name apple_music_yt_downloader
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if ! grep -q "android.permission.READ_MEDIA_AUDIO" "$MANIFEST"; then
+            sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"\/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"\/>\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"\/>\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"\/>/' "$MANIFEST"
+          fi
+          flutter pub get
+          flutter build apk --release
+
+      - name: Subir archivo APK listo para descargar
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppleMusicYT-APK
+          path: "**/build/app/outputs/flutter-apk/app-release.apk"
