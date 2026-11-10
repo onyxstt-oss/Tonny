@@ -5,6 +5,22 @@ class LyricLine {
   LyricLine({required this.timestamp, required this.text});
 }
 
+class VideoMetadataModel {
+  final String id;
+  final String title;
+  final String author;
+  final String thumbnailUrl;
+  final int durationSeconds;
+
+  VideoMetadataModel({
+    required this.id,
+    required this.title,
+    required this.author,
+    required this.thumbnailUrl,
+    required this.durationSeconds,
+  });
+}
+
 class MediaItemModel {
   final String id;
   String title;
@@ -118,15 +134,17 @@ class PlaylistModel {
 
 class DownloadFormatOption {
   final String format; // 'MP3', 'M4A', 'MP4'
-  final String qualityLabel; // ej. '320 kbps (Audio)', '1080p HD (Video)'
+  final String qualityLabel; // ej. '320 kbps (Audio)', '720p HD (Video)'
   final String downloadUrl;
   final int sizeBytes;
+  final String userAgent;
 
   DownloadFormatOption({
     required this.format,
     required this.qualityLabel,
     required this.downloadUrl,
     required this.sizeBytes,
+    required this.userAgent,
   });
 }
 

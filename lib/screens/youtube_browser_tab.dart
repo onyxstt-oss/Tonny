@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 import '../models/media_item.dart';
 import '../services/app_state.dart';
@@ -37,15 +36,24 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
       ..loadRequest(Uri.parse('https://m.youtube.com'));
   }
 
+  Future<String> _getActualBrowserUrl() async {
+    try {
+      final jsResult = await _controller.runJavaScriptReturningResult('window.location.href');
+      final cleaned = jsResult.toString().replaceAll('"', '').trim();
+      if (cleaned.startsWith('http')) {
+        return cleaned;
+      }
+    } catch (_) {}
+    return await _controller.currentUrl() ?? '';
+  }
+
   Future<void> _onDownloadPressed() async {
     if (_isAnalyzingVideo) return;
 
-    final currentUrl = await _controller.currentUrl() ?? '';
-    final isVideo = currentUrl.contains('watch?v=') ||
-        currentUrl.contains('youtu.be/') ||
-        currentUrl.contains('/shorts/');
+    final currentUrl = await _getActualBrowserUrl();
+    final videoId = widget.appState.extractVideoId(currentUrl);
 
-    if (!isVideo) {
+    if (videoId == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -60,8 +68,9 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
 
     try {
       final result = await widget.appState.analyzeYoutubeUrl(currentUrl);
-      final Video video = result['video'];
-      final List<DownloadFormatOption> options = result['options'];
+      final VideoMetadataModel video = result['video'] as VideoMetadataModel;
+      final List<DownloadFormatOption> options =
+          List<DownloadFormatOption>.from(result['options'] as List);
 
       if (!mounted) return;
       _showFormatSelectorModal(video, options);
@@ -69,7 +78,7 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('❌ No se pudieron obtener los formatos: $e'),
+          content: Text('❌ Error al obtener formatos: $e'),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -78,9 +87,13 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
     }
   }
 
-  void _showFormatSelectorModal(Video video, List<DownloadFormatOption> options) {
+  void _showFormatSelectorModal(
+    VideoMetadataModel video,
+    List<DownloadFormatOption> options,
+  ) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: const Color(0xFF1C1C1E),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -99,10 +112,16 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
                     ClipRRect(
                       borderRadius: BorderRadius.circular(10),
                       child: Image.network(
-                        video.thumbnails.mediumResUrl,
+                        video.thumbnailUrl,
                         width: 72,
                         height: 54,
                         fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(
+                          width: 72,
+                          height: 54,
+                          color: Colors.white12,
+                          child: const Icon(Icons.music_note, color: Colors.white),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -123,6 +142,8 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
                           const SizedBox(height: 4),
                           Text(
                             video.author,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: Colors.white60, fontSize: 13),
                           ),
                         ],
@@ -142,7 +163,10 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Flexible(
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(ctx).size.height * 0.45,
+                  ),
                   child: ListView.builder(
                     shrinkWrap: true,
                     itemCount: options.length,
