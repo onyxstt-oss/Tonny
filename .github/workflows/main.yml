@@ -24,16 +24,22 @@ jobs:
           flutter-version: '3.22.0'
           channel: 'stable'
 
-      - name: Generar estructura Android, inyectar permisos y compilar APK
+      - name: Generar estructura Android, inyectar permisos, memoria y compilar APK
         run: |
           if [ -d "mobile_app_flutter" ]; then
             cd mobile_app_flutter
           fi
           flutter create . --platforms android --project-name apple_music_yt_downloader
           MANIFEST="android/app/src/main/AndroidManifest.xml"
+          
+          # Inyectar permisos de Android
           if ! grep -q "android.permission.READ_MEDIA_AUDIO" "$MANIFEST"; then
-            sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"\/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"\/>\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"\/>\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"\/>/' "$MANIFEST"
+            sed -i 's/<manifest[^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>\n    <uses-permission android:name="android.permission.WAKE_LOCK"\/>\n    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"\/>\n    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"\/>\n    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"\/>\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"\/>/' "$MANIFEST"
           fi
+
+          # Inyectar hardwareAcceleration y largeHeap para evitar que BlueStacks/Android cierre la app por falta de RAM en WebView
+          sed -i 's/<application /<application android:largeHeap="true" android:hardwareAccelerated="true" /' "$MANIFEST"
+
           flutter pub get
           flutter build apk --release
 
