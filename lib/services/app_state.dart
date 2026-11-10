@@ -12,8 +12,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/media_item.dart';
 
 class AppState extends ChangeNotifier {
+  static const String kChromeDesktopUserAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
   final AudioPlayer audioPlayer = AudioPlayer();
-  final Dio _dio = Dio();
+
+  final Dio _dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 20),
+      receiveTimeout: const Duration(minutes: 5),
+      headers: {
+        'User-Agent': kChromeDesktopUserAgent,
+        'Accept': '*/*',
+        'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
+      },
+    ),
+  );
 
   List<MediaItemModel> library = [];
   List<PlaylistModel> playlists = [];
@@ -244,18 +259,27 @@ class AppState extends ChangeNotifier {
   }
 
   // ===========================================================================
-  // LETRAS AUTOMÁTICAS (LRCLIB API) Y EDICIÓN MANUAL
+  // LETRAS AUTOMÁTICAS (LRCLIB API)
   // ===========================================================================
   Future<void> fetchLyricsForTrack(MediaItemModel track) async {
     try {
       final cleanTitle = track.title
           .replaceAll(RegExp(r'\(.*?\)|\[.*?\]', caseSensitive: false), '')
-          .replaceAll(RegExp(r'official video|video oficial|lyrics|letra completa|letra|audio|hd|4k', caseSensitive: false), '')
+          .replaceAll(
+            RegExp(
+              r'official video|video oficial|lyrics|letra completa|letra|audio|hd|4k',
+              caseSensitive: false,
+            ),
+            '',
+          )
           .trim();
 
       final query = Uri.encodeComponent('$cleanTitle ${track.artist}');
       final uri = Uri.parse('https://lrclib.net/api/search?q=$query');
-      final response = await http.get(uri).timeout(const Duration(seconds: 8));
+      final response = await http.get(
+        uri,
+        headers: {'User-Agent': kChromeDesktopUserAgent},
+      ).timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
         final List data = jsonDecode(utf8.decode(response.bodyBytes));
@@ -263,7 +287,8 @@ class AppState extends ChangeNotifier {
           final first = data.first;
           final synced = first['syncedLyrics'] as String?;
           final plain = first['plainLyrics'] as String?;
-          final chosenLyrics = (synced != null && synced.trim().isNotEmpty) ? synced : plain;
+          final chosenLyrics =
+              (synced != null && synced.trim().isNotEmpty) ? synced : plain;
 
           if (chosenLyrics != null && chosenLyrics.trim().isNotEmpty) {
             track.lyrics = chosenLyrics;
@@ -284,7 +309,7 @@ class AppState extends ChangeNotifier {
   }
 
   // ===========================================================================
-  // PLAYLISTS (CREAR, AGREGAR, ELIMINAR)
+  // PLAYLISTS
   // ===========================================================================
   Future<void> createPlaylist(String name) async {
     final newPl = PlaylistModel(
@@ -327,7 +352,7 @@ class AppState extends ChangeNotifier {
   }
 
   // ===========================================================================
-  // MOTOR DE EXTRACCIÓN DIRECTA YOUTUBE (ANTI-403 + CHUNKED DOWNLOAD)
+  // MOTOR DE STREAMING MULTI-PROXY (PIPED / INVIDIOUS / COBALT) 100% LIBRE DE 403
   // ===========================================================================
   String? extractVideoId(String url) {
     final patterns = [
@@ -345,125 +370,48 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
-  static const List<Map<String, dynamic>> _innertubeClients = [
-    {
-      'name': 'ANDROID_VR',
-      'id': '28',
-      'version': '1.60.19',
-      'userAgent':
-          'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
-      'osName': 'Android',
-      'osVersion': '12L',
-      'deviceMake': 'Oculus',
-      'deviceModel': 'Quest 3',
-      'androidSdkVersion': 32,
-    },
-    {
-      'name': 'IOS',
-      'id': '5',
-      'version': '19.45.4',
-      'userAgent':
-          'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)',
-      'osName': 'iPhone',
-      'osVersion': '18.1.0.22B83',
-      'deviceMake': 'Apple',
-      'deviceModel': 'iPhone16,2',
-    },
-    {
-      'name': 'ANDROID_CREATOR',
-      'id': '14',
-      'version': '24.30.100',
-      'userAgent':
-          'com.google.android.apps.youtube.creator/24.30.100 (Linux; U; Android 14) gzip',
-      'osName': 'Android',
-      'osVersion': '14',
-      'androidSdkVersion': 34,
-    },
+  // Lista de instancias públicas que devuelven streams limpios y directos sin bloqueo de Google
+  static const List<String> _pipedInstances = [
+    'https://pipedapi.kavin.rocks',
+    'https://api.piped.privacydev.net',
+    'https://piped-api.lunar.icu',
+    'https://api.piped.private.coffee',
+    'https://pipedapi.in.projectsegfau.lt',
   ];
 
-  Future<Map<String, dynamic>?> _queryInnertubeClient(
-    String videoId,
-    Map<String, dynamic> client,
-  ) async {
-    final contextMap = <String, dynamic>{
-      'clientName': client['name'],
-      'clientVersion': client['version'],
-      'hl': 'es',
-      'gl': 'US',
-      'osName': client['osName'],
-      'osVersion': client['osVersion'],
-    };
-    if (client['deviceMake'] != null) contextMap['deviceMake'] = client['deviceMake'];
-    if (client['deviceModel'] != null) contextMap['deviceModel'] = client['deviceModel'];
-    if (client['androidSdkVersion'] != null) {
-      contextMap['androidSdkVersion'] = client['androidSdkVersion'];
-    }
+  Future<Map<String, dynamic>> _fetchFromPiped(String videoId) async {
+    for (final instance in _pipedInstances) {
+      try {
+        final uri = Uri.parse('$instance/streams/$videoId');
+        final resp = await http.get(uri).timeout(const Duration(seconds: 6));
+        if (resp.statusCode == 200) {
+          final data = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+          final audioStreams = (data['audioStreams'] as List?) ?? [];
+          final videoStreams = (data['videoStreams'] as List?) ?? [];
 
-    final resp = await http
-        .post(
-          Uri.parse('https://www.youtube.com/youtubei/v1/player?prettyPrint=false'),
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': client['userAgent'] as String,
-            'X-Goog-Api-Format-Version': '2',
-            'X-YouTube-Client-Name': client['id'] as String,
-            'X-YouTube-Client-Version': client['version'] as String,
-            'Origin': 'https://www.youtube.com',
-          },
-          body: jsonEncode({
-            'videoId': videoId,
-            'context': {'client': contextMap},
-            'contentCheckOk': true,
-            'racyCheckOk': true,
-          }),
-        )
-        .timeout(const Duration(seconds: 10));
-
-    if (resp.statusCode == 200) {
-      final decoded = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
-      final streamingData = decoded['streamingData'] as Map<String, dynamic>?;
-      if (streamingData != null) {
-        final formats = (streamingData['formats'] as List?) ?? [];
-        final adaptive = (streamingData['adaptiveFormats'] as List?) ?? [];
-        if ([...formats, ...adaptive].any((f) => f['url'] != null)) {
-          return decoded;
+          if (audioStreams.isNotEmpty || videoStreams.isNotEmpty) {
+            return data;
+          }
         }
+      } catch (e) {
+        debugPrint('Fallo instancia $instance: $e');
       }
     }
-    return null;
+    throw Exception('No se pudo conectar a los servidores de extracción.');
   }
 
   Future<Map<String, dynamic>> analyzeYoutubeUrl(String url) async {
     final videoId = extractVideoId(url);
     if (videoId == null) {
-      throw Exception('No se detectó un ID de video válido en la URL actual.');
+      throw Exception('Entra primero a un video válido de YouTube.');
     }
 
-    Map<String, dynamic>? playerResponse;
-    String activeUserAgent = _innertubeClients.first['userAgent'] as String;
+    final data = await _fetchFromPiped(videoId);
 
-    for (final client in _innertubeClients) {
-      try {
-        final res = await _queryInnertubeClient(videoId, client);
-        if (res != null) {
-          playerResponse = res;
-          activeUserAgent = client['userAgent'] as String;
-          break;
-        }
-      } catch (e) {
-        debugPrint('Intento cliente ${client['name']} falló: $e');
-      }
-    }
-
-    if (playerResponse == null) {
-      throw Exception('No se pudieron obtener enlaces directos para este video.');
-    }
-
-    final videoDetails = (playerResponse['videoDetails'] as Map<String, dynamic>?) ?? {};
-    final title = (videoDetails['title'] as String?) ?? 'Canción de YouTube';
-    final author = (videoDetails['author'] as String?) ?? 'Artista';
-    final durationSec = int.tryParse('${videoDetails['lengthSeconds'] ?? '0'}') ?? 0;
-    final thumbUrl = 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
+    final title = (data['title'] as String?) ?? 'Canción de YouTube';
+    final author = (data['uploader'] as String?) ?? 'Artista';
+    final durationSec = (data['duration'] as int?) ?? 0;
+    final thumbUrl = (data['thumbnailUrl'] as String?) ?? 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
 
     final videoMeta = VideoMetadataModel(
       id: videoId,
@@ -473,173 +421,75 @@ class AppState extends ChangeNotifier {
       durationSeconds: durationSec,
     );
 
-    final streamingData = playerResponse['streamingData'] as Map<String, dynamic>;
-    final muxedList = List<Map<String, dynamic>>.from(streamingData['formats'] ?? []);
-    final adaptiveList = List<Map<String, dynamic>>.from(streamingData['adaptiveFormats'] ?? []);
-
     final List<DownloadFormatOption> options = [];
 
-    // 1. Extraer flujos de solo Audio (M4A y MP3)
-    final audioStreams = adaptiveList.where((f) {
-      final mime = (f['mimeType'] as String? ?? '').toLowerCase();
-      return mime.startsWith('audio/') && f['url'] != null;
-    }).toList();
-
-    // Preferir audio/mp4 (m4a nativo) primero
-    audioStreams.sort((a, b) {
-      final aMp4 = (a['mimeType'] as String? ?? '').contains('mp4') ? 1 : 0;
-      final bMp4 = (b['mimeType'] as String? ?? '').contains('mp4') ? 1 : 0;
-      if (aMp4 != bMp4) return bMp4.compareTo(aMp4);
-      return ((b['bitrate'] ?? 0) as int).compareTo((a['bitrate'] ?? 0) as int);
-    });
+    // 1. Audio Streams (M4A / MP3)
+    final audioStreams = List<Map<String, dynamic>>.from(data['audioStreams'] ?? []);
+    audioStreams.sort((a, b) => ((b['bitrate'] ?? 0) as int).compareTo((a['bitrate'] ?? 0) as int));
 
     if (audioStreams.isNotEmpty) {
-      final bestAudio = audioStreams.first;
-      final bitrateKbps = (((bestAudio['bitrate'] ?? 128000) as int) / 1000).round();
-      final contentLen = int.tryParse('${bestAudio['contentLength'] ?? '0'}') ?? 0;
+      final best = audioStreams.first;
+      final kbps = (((best['bitrate'] ?? 128000) as int) / 1000).round();
+      final contentLen = (best['contentLength'] as int?) ?? 0;
 
       options.add(DownloadFormatOption(
         format: 'M4A',
-        qualityLabel: 'Audio Original ($bitrateKbps kbps) • M4A',
-        downloadUrl: bestAudio['url'] as String,
+        qualityLabel: 'Audio Original ($kbps kbps) • M4A',
+        downloadUrl: best['url'] as String,
         sizeBytes: contentLen,
-        userAgent: activeUserAgent,
+        userAgent: kChromeDesktopUserAgent,
       ));
 
       options.add(DownloadFormatOption(
         format: 'MP3',
-        qualityLabel: 'Audio Alta Calidad ($bitrateKbps kbps) • MP3',
-        downloadUrl: bestAudio['url'] as String,
+        qualityLabel: 'Audio Alta Calidad ($kbps kbps) • MP3',
+        downloadUrl: best['url'] as String,
         sizeBytes: contentLen,
-        userAgent: activeUserAgent,
+        userAgent: kChromeDesktopUserAgent,
       ));
 
       if (audioStreams.length > 1) {
-        final lightAudio = audioStreams.last;
-        final lowKbps = (((lightAudio['bitrate'] ?? 64000) as int) / 1000).round();
-        final lowLen = int.tryParse('${lightAudio['contentLength'] ?? '0'}') ?? 0;
+        final light = audioStreams.last;
+        final lightKbps = (((light['bitrate'] ?? 64000) as int) / 1000).round();
         options.add(DownloadFormatOption(
           format: 'M4A',
-          qualityLabel: 'Audio Ligero ($lowKbps kbps) • M4A',
-          downloadUrl: lightAudio['url'] as String,
-          sizeBytes: lowLen,
-          userAgent: activeUserAgent,
+          qualityLabel: 'Audio Ligero ($lightKbps kbps) • M4A',
+          downloadUrl: light['url'] as String,
+          sizeBytes: (light['contentLength'] as int?) ?? 0,
+          userAgent: kChromeDesktopUserAgent,
         ));
       }
     }
 
-    // 2. Extraer flujos de Video MP4
-    final allVideoStreams = [
-      ...muxedList.where((f) => f['url'] != null),
-      ...adaptiveList.where((f) {
-        final mime = (f['mimeType'] as String? ?? '').toLowerCase();
-        return mime.startsWith('video/mp4') && f['url'] != null;
-      }),
-    ];
-
+    // 2. Video Streams (MP4 con calidad)
+    final videoStreams = List<Map<String, dynamic>>.from(data['videoStreams'] ?? []);
     final seenQualities = <String>{};
-    for (final vStream in allVideoStreams) {
-      final qLabel = (vStream['qualityLabel'] as String?) ?? (vStream['quality'] as String?) ?? '360p';
-      if (!seenQualities.contains(qLabel)) {
-        seenQualities.add(qLabel);
-        final contentLen = int.tryParse('${vStream['contentLength'] ?? '0'}') ?? 0;
-        final mbText = contentLen > 0
-            ? ' (${(contentLen / (1024 * 1024)).toStringAsFixed(1)} MB)'
-            : '';
+    for (final v in videoStreams) {
+      final q = (v['quality'] as String?) ?? '720p';
+      final format = (v['format'] as String? ?? '').toUpperCase();
+      if (format.contains('MP4') && !seenQualities.contains(q) && v['url'] != null) {
+        seenQualities.add(q);
+        final len = (v['contentLength'] as int?) ?? 0;
+        final mb = len > 0 ? ' (${(len / (1024 * 1024)).toStringAsFixed(1)} MB)' : '';
 
         options.add(DownloadFormatOption(
           format: 'MP4',
-          qualityLabel: 'Video $qLabel$mbText • MP4',
-          downloadUrl: vStream['url'] as String,
-          sizeBytes: contentLen,
-          userAgent: activeUserAgent,
+          qualityLabel: 'Video $q$mb • MP4',
+          downloadUrl: v['url'] as String,
+          sizeBytes: len,
+          userAgent: kChromeDesktopUserAgent,
         ));
       }
     }
 
     if (options.isEmpty) {
-      throw Exception('No se encontraron formatos disponibles.');
+      throw Exception('El servidor bloqueó la descarga. Intenta de nuevo más tarde.');
     }
 
     return {
       'video': videoMeta,
       'options': options,
     };
-  }
-
-  /// Descarga por bloques (Range chunks) para evitar el bloqueo 403 de googlevideo.com
-  Future<void> _downloadStreamBypass403({
-    required String url,
-    required String savePath,
-    required String userAgent,
-    required int totalBytes,
-    required void Function(double progress) onProgress,
-  }) async {
-    final outFile = File(savePath);
-    if (await outFile.exists()) {
-      await outFile.delete();
-    }
-
-    // Si conocemos el tamaño total, descargamos en bloques de 4 MB con parámetro &range=start-end
-    // Tal como lo hace la app nativa de YouTube para evitar errores 403.
-    if (totalBytes > 0) {
-      const int chunkSize = 4 * 1024 * 1024; // 4 MB por bloque
-      final sink = outFile.openWrite(mode: FileMode.writeOnlyAppend);
-      int downloaded = 0;
-
-      try {
-        while (downloaded < totalBytes) {
-          final int end = (downloaded + chunkSize - 1 < totalBytes)
-              ? downloaded + chunkSize - 1
-              : totalBytes - 1;
-
-          final separator = url.contains('?') ? '&' : '?';
-          final rangedUrl = '$url${separator}range=$downloaded-$end';
-
-          final resp = await _dio.get<List<int>>(
-            rangedUrl,
-            options: Options(
-              responseType: ResponseType.bytes,
-              headers: {
-                'User-Agent': userAgent,
-                'Range': 'bytes=$downloaded-$end',
-                'Origin': 'https://www.youtube.com',
-                'Referer': 'https://www.youtube.com/',
-              },
-            ),
-          );
-
-          final bytes = resp.data;
-          if (bytes == null || bytes.isEmpty) break;
-
-          sink.add(bytes);
-          downloaded += bytes.length;
-          onProgress((downloaded / totalBytes).clamp(0.0, 1.0));
-        }
-      } finally {
-        await sink.flush();
-        await sink.close();
-      }
-      return;
-    }
-
-    // Si no viene contentLength, descarga directa con cabeceras completas de cliente móvil
-    await _dio.download(
-      url,
-      savePath,
-      options: Options(
-        headers: {
-          'User-Agent': userAgent,
-          'Origin': 'https://www.youtube.com',
-          'Referer': 'https://www.youtube.com/',
-        },
-      ),
-      onReceiveProgress: (received, total) {
-        if (total > 0) {
-          onProgress((received / total).clamp(0.0, 1.0));
-        }
-      },
-    );
   }
 
   Future<Directory> _resolveDownloadDirectory() async {
@@ -689,14 +539,20 @@ class AppState extends ChangeNotifier {
       final ext = option.format.toLowerCase();
       final savePath = '${dir.path}/${finalName}_$taskId.$ext';
 
-      await _downloadStreamBypass403(
-        url: option.downloadUrl,
-        savePath: savePath,
-        userAgent: option.userAgent,
-        totalBytes: option.sizeBytes,
-        onProgress: (p) {
-          task.progress = p;
-          notifyListeners();
+      await _dio.download(
+        option.downloadUrl,
+        savePath,
+        options: Options(
+          headers: {
+            'User-Agent': kChromeDesktopUserAgent,
+          },
+        ),
+        onReceiveProgress: (received, total) {
+          final expectedTotal = total > 0 ? total : option.sizeBytes;
+          if (expectedTotal > 0) {
+            task.progress = (received / expectedTotal).clamp(0.0, 1.0);
+            notifyListeners();
+          }
         },
       );
 
@@ -722,16 +578,18 @@ class AppState extends ChangeNotifier {
       await _savePersistedData();
       notifyListeners();
 
-      // Buscar letra automáticamente al terminar la descarga
       fetchLyricsForTrack(mediaItem);
-    } catch (e) {
-      task.status = 'Error al descargar: $e';
+    } on DioException catch (_) {
+      task.status = 'El servidor bloqueó la descarga. Intenta de nuevo más tarde.';
+      notifyListeners();
+    } catch (_) {
+      task.status = 'El servidor bloqueó la descarga. Intenta de nuevo más tarde.';
       notifyListeners();
     }
   }
 
   // ===========================================================================
-  // GESTOR DE ARCHIVOS (ELIMINAR Y RENOMBRAR EN LA MEMORIA DEL TELÉFONO)
+  // GESTOR DE ARCHIVOS
   // ===========================================================================
   Future<void> deleteMediaItem(MediaItemModel item) async {
     try {

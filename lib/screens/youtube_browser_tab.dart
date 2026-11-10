@@ -76,9 +76,10 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
       _showFormatSelectorModal(video, options);
     } catch (e) {
       if (!mounted) return;
+      final cleanMsg = e.toString().replaceAll('Exception: ', '');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('❌ Error al obtener formatos: $e'),
+          content: Text('⚠️ $cleanMsg'),
           backgroundColor: Colors.redAccent,
         ),
       );
