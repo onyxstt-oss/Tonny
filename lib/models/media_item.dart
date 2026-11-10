@@ -1,24 +1,10 @@
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+
 class LyricLine {
   final Duration timestamp;
   final String text;
 
   LyricLine({required this.timestamp, required this.text});
-}
-
-class VideoMetadataModel {
-  final String id;
-  final String title;
-  final String author;
-  final String thumbnailUrl;
-  final int durationSeconds;
-
-  VideoMetadataModel({
-    required this.id,
-    required this.title,
-    required this.author,
-    required this.thumbnailUrl,
-    required this.durationSeconds,
-  });
 }
 
 class MediaItemModel {
@@ -134,17 +120,15 @@ class PlaylistModel {
 
 class DownloadFormatOption {
   final String format; // 'MP3', 'M4A', 'MP4'
-  final String qualityLabel; // ej. '320 kbps (Audio)', '720p HD (Video)'
-  final String downloadUrl;
+  final String qualityLabel; // ej. 'Audio Original (128 kbps) • M4A'
+  final StreamInfo streamInfo;
   final int sizeBytes;
-  final String userAgent;
 
   DownloadFormatOption({
     required this.format,
     required this.qualityLabel,
-    required this.downloadUrl,
+    required this.streamInfo,
     required this.sizeBytes,
-    required this.userAgent,
   });
 }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'screens/file_manager_tab.dart';
 import 'screens/library_playlists_tab.dart';
@@ -28,6 +29,26 @@ class AppleMusicYTApp extends StatefulWidget {
 class _AppleMusicYTAppState extends State<AppleMusicYTApp> {
   final AppState _appState = AppState();
   int _selectedIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _requestAppPermissions();
+  }
+
+  /// Solicita de inmediato al usuario los permisos de almacenamiento, audio y notificaciones
+  Future<void> _requestAppPermissions() async {
+    try {
+      await [
+        Permission.storage,
+        Permission.audio,
+        Permission.videos,
+        Permission.notification,
+      ].request();
+    } catch (e) {
+      debugPrint('Error solicitando permisos iniciales: $e');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

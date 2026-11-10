@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 import '../models/media_item.dart';
 import '../services/app_state.dart';
@@ -14,82 +14,92 @@ class YoutubeBrowserTab extends StatefulWidget {
 }
 
 class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
-  late final WebViewController _controller;
-  bool _isLoadingPage = true;
-  bool _isAnalyzingVideo = false;
+  final TextEditingController _searchController = TextEditingController();
+  List<Video> _videos = [];
+  bool _isLoading = false;
+  String? _analyzingVideoId;
+  String _selectedCategory = 'Tendencias Música';
+
+  final List<String> _categories = [
+    'Tendencias Música',
+    'La Santa Grifa',
+    'Rap Mexicano',
+    'Éxitos Latinos',
+    'Corridos Tumbados',
+    'Reggaetón',
+    'Rock en Español',
+  ];
 
   @override
   void initState() {
     super.initState();
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageStarted: (_) {
-            if (mounted) setState(() => _isLoadingPage = true);
-          },
-          onPageFinished: (_) {
-            if (mounted) setState(() => _isLoadingPage = false);
-          },
-        ),
-      )
-      ..loadRequest(Uri.parse('https://m.youtube.com'));
+    _performSearch(_selectedCategory);
   }
 
-  Future<String> _getActualBrowserUrl() async {
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _performSearch(String query) async {
+    if (query.trim().isEmpty) return;
+    setState(() => _isLoading = true);
+
     try {
-      final jsResult = await _controller.runJavaScriptReturningResult('window.location.href');
-      final cleaned = jsResult.toString().replaceAll('"', '').trim();
-      if (cleaned.startsWith('http')) {
-        return cleaned;
+      final results = await widget.appState.searchYoutubeVideos(query);
+      if (mounted) {
+        setState(() {
+          _videos = results;
+          _isLoading = false;
+        });
       }
-    } catch (_) {}
-    return await _controller.currentUrl() ?? '';
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('⚠️ Error al buscar en YouTube. Verifica tu conexión.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
   }
 
-  Future<void> _onDownloadPressed() async {
-    if (_isAnalyzingVideo) return;
-
-    final currentUrl = await _getActualBrowserUrl();
-    final videoId = widget.appState.extractVideoId(currentUrl);
-
-    if (videoId == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('⚠️ Primero entra a un video o canción de YouTube para elegir el formato de descarga.'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
-
-    setState(() => _isAnalyzingVideo = true);
+  Future<void> _onDownloadVideoPressed(Video video) async {
+    if (_analyzingVideoId != null) return;
+    setState(() => _analyzingVideoId = video.id.value);
 
     try {
-      final result = await widget.appState.analyzeYoutubeUrl(currentUrl);
-      final VideoMetadataModel video = result['video'] as VideoMetadataModel;
-      final List<DownloadFormatOption> options =
-          List<DownloadFormatOption>.from(result['options'] as List);
-
+      final options = await widget.appState.getFormatsForVideo(video);
       if (!mounted) return;
       _showFormatSelectorModal(video, options);
     } catch (e) {
       if (!mounted) return;
-      final cleanMsg = e.toString().replaceAll('Exception: ', '');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('⚠️ $cleanMsg'),
+        const SnackBar(
+          content: Text('⚠️ El servidor bloqueó la consulta de este video. Intenta con otro.'),
           backgroundColor: Colors.redAccent,
         ),
       );
     } finally {
-      if (mounted) setState(() => _isAnalyzingVideo = false);
+      if (mounted) setState(() => _analyzingVideoId = null);
     }
   }
 
+  String _formatVideoDuration(Duration? d) {
+    if (d == null) return 'EN VIVO';
+    final mins = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final secs = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    if (d.inHours > 0) {
+      return '${d.inHours}:$mins:$secs';
+    }
+    return '$mins:$secs';
+  }
+
   void _showFormatSelectorModal(
-    VideoMetadataModel video,
+    Video video,
     List<DownloadFormatOption> options,
   ) {
     showModalBottomSheet(
@@ -107,19 +117,18 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Cabecera con miniatura y título del video
                 Row(
                   children: [
                     ClipRRect(
                       borderRadius: BorderRadius.circular(10),
                       child: Image.network(
-                        video.thumbnailUrl,
-                        width: 72,
-                        height: 54,
+                        video.thumbnails.mediumResUrl,
+                        width: 76,
+                        height: 56,
                         fit: BoxFit.cover,
                         errorBuilder: (_, __, ___) => Container(
-                          width: 72,
-                          height: 54,
+                          width: 76,
+                          height: 56,
                           color: Colors.white12,
                           child: const Icon(Icons.music_note, color: Colors.white),
                         ),
@@ -230,71 +239,235 @@ class _YoutubeBrowserTabState extends State<YoutubeBrowserTab> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF111113),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF18181A),
+        backgroundColor: const Color(0xFF161619),
+        elevation: 0,
         title: const Row(
           children: [
-            Icon(Icons.play_circle_fill_rounded, color: Colors.redAccent),
+            Icon(Icons.play_circle_fill_rounded, color: Colors.redAccent, size: 28),
             SizedBox(width: 8),
             Text(
-              'YouTube Navegador',
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+              'YouTube Música y Videos',
+              style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800),
             ),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
-            onPressed: () async {
-              if (await _controller.canGoBack()) {
-                await _controller.goBack();
-              }
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            onPressed: () => _controller.reload(),
-          ),
-          IconButton(
-            icon: const Icon(Icons.home_rounded),
-            onPressed: () => _controller.loadRequest(Uri.parse('https://m.youtube.com')),
-          ),
-        ],
       ),
-      body: Stack(
+      body: Column(
         children: [
-          WebViewWidget(controller: _controller),
-          if (_isLoadingPage)
-            const LinearProgressIndicator(
-              color: Colors.pinkAccent,
-              backgroundColor: Colors.transparent,
-            ),
+          // Barra de búsqueda nativa de YouTube (sin anuncios ni cierres de WebView)
+          Container(
+            color: const Color(0xFF161619),
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _searchController,
+                  style: const TextStyle(color: Colors.white),
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: _performSearch,
+                  decoration: InputDecoration(
+                    hintText: 'Busca una canción, artista o pega un link de YouTube...',
+                    hintStyle: const TextStyle(color: Colors.white38, fontSize: 14),
+                    prefixIcon: const Icon(Icons.search_rounded, color: Colors.pinkAccent),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.send_rounded, color: Colors.pinkAccent),
+                      onPressed: () => _performSearch(_searchController.text),
+                    ),
+                    filled: true,
+                    fillColor: const Color(0xFF232327),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
 
-          // Botón flotante "Descargar" con selector de MP3 / M4A / MP4 y calidades
-          Positioned(
-            right: 16,
-            bottom: 18,
-            child: FloatingActionButton.extended(
-              backgroundColor: Colors.pinkAccent,
-              foregroundColor: Colors.white,
-              elevation: 8,
-              onPressed: _onDownloadPressed,
-              icon: _isAnalyzingVideo
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2.5,
-                      ),
-                    )
-                  : const Icon(Icons.download_rounded),
-              label: Text(
-                _isAnalyzingVideo ? 'Analizando...' : 'Descargar',
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-              ),
+                // Chips de categorías rápidas
+                SizedBox(
+                  height: 36,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _categories.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 8),
+                    itemBuilder: (_, idx) {
+                      final cat = _categories[idx];
+                      final isSelected = cat == _selectedCategory;
+                      return ChoiceChip(
+                        label: Text(cat),
+                        selected: isSelected,
+                        selectedColor: Colors.pinkAccent,
+                        backgroundColor: const Color(0xFF232327),
+                        labelStyle: TextStyle(
+                          color: isSelected ? Colors.white : Colors.white70,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12.5,
+                        ),
+                        onSelected: (_) {
+                          setState(() => _selectedCategory = cat);
+                          _searchController.text = cat;
+                          _performSearch(cat);
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
+          ),
+
+          // Lista de resultados de YouTube con botón directo "Descargar"
+          Expanded(
+            child: _isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(color: Colors.pinkAccent),
+                  )
+                : _videos.isEmpty
+                    ? const Center(
+                        child: Text(
+                          'Busca cualquier canción o artista arriba.',
+                          style: TextStyle(color: Colors.white54, fontSize: 15),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(14, 10, 14, 100),
+                        itemCount: _videos.length,
+                        itemBuilder: (context, index) {
+                          final video = _videos[index];
+                          final isAnalyzingThis = _analyzingVideoId == video.id.value;
+
+                          return Card(
+                            color: const Color(0xFF1B1B1F),
+                            margin: const EdgeInsets.symmetric(vertical: 7),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // Miniatura grande con duración
+                                  Stack(
+                                    children: [
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: AspectRatio(
+                                          aspectRatio: 16 / 9,
+                                          child: Image.network(
+                                            video.thumbnails.highResUrl,
+                                            fit: BoxFit.cover,
+                                            errorBuilder: (_, __, ___) => Container(
+                                              color: Colors.white10,
+                                              child: const Icon(
+                                                Icons.music_video_rounded,
+                                                color: Colors.white54,
+                                                size: 56,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      Positioned(
+                                        right: 8,
+                                        bottom: 8,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Colors.black87,
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: Text(
+                                            _formatVideoDuration(video.duration),
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+
+                                  // Título, canal y botón "Descargar"
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.center,
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              video.title,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 15,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Text(
+                                              video.author,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: Colors.white60,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      ElevatedButton.icon(
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.pinkAccent,
+                                          foregroundColor: Colors.white,
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 14,
+                                            vertical: 11,
+                                          ),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(12),
+                                          ),
+                                        ),
+                                        onPressed: () => _onDownloadVideoPressed(video),
+                                        icon: isAnalyzingThis
+                                            ? const SizedBox(
+                                                width: 16,
+                                                height: 16,
+                                                child: CircularProgressIndicator(
+                                                  color: Colors.white,
+                                                  strokeWidth: 2,
+                                                ),
+                                              )
+                                            : const Icon(Icons.download_rounded, size: 20),
+                                        label: Text(
+                                          isAnalyzingThis ? 'Cargando...' : 'Descargar',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13.5,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
           ),
         ],
       ),

@@ -2,12 +2,12 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:audio_session/audio_session.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 import '../models/media_item.dart';
 
@@ -17,18 +17,6 @@ class AppState extends ChangeNotifier {
       '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
   final AudioPlayer audioPlayer = AudioPlayer();
-
-  final Dio _dio = Dio(
-    BaseOptions(
-      connectTimeout: const Duration(seconds: 20),
-      receiveTimeout: const Duration(minutes: 5),
-      headers: {
-        'User-Agent': kChromeDesktopUserAgent,
-        'Accept': '*/*',
-        'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
-      },
-    ),
-  );
 
   List<MediaItemModel> library = [];
   List<PlaylistModel> playlists = [];
@@ -352,144 +340,102 @@ class AppState extends ChangeNotifier {
   }
 
   // ===========================================================================
-  // MOTOR DE STREAMING MULTI-PROXY (PIPED / INVIDIOUS / COBALT) 100% LIBRE DE 403
+  // BUSCADOR NATIVO DE YOUTUBE + DESCARGADOR NATIVO DE STREAMS (SIN WEBVIEW CRASH)
   // ===========================================================================
-  String? extractVideoId(String url) {
-    final patterns = [
-      RegExp(r'[?&]v=([a-zA-Z0-9_-]{11})'),
-      RegExp(r'youtu\.be/([a-zA-Z0-9_-]{11})'),
-      RegExp(r'shorts/([a-zA-Z0-9_-]{11})'),
-      RegExp(r'embed/([a-zA-Z0-9_-]{11})'),
-    ];
-    for (final reg in patterns) {
-      final match = reg.firstMatch(url);
-      if (match != null && match.groupCount >= 1) {
-        return match.group(1);
+  Future<List<Video>> searchYoutubeVideos(String query) async {
+    final yt = YoutubeExplode();
+    try {
+      final trimmed = query.trim();
+      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+        final v = await yt.videos.get(trimmed);
+        return [v];
       }
+      final searchList = await yt.search.search(trimmed);
+      return searchList.toList();
+    } finally {
+      yt.close();
     }
-    return null;
   }
 
-  // Lista de instancias públicas que devuelven streams limpios y directos sin bloqueo de Google
-  static const List<String> _pipedInstances = [
-    'https://pipedapi.kavin.rocks',
-    'https://api.piped.privacydev.net',
-    'https://piped-api.lunar.icu',
-    'https://api.piped.private.coffee',
-    'https://pipedapi.in.projectsegfau.lt',
-  ];
-
-  Future<Map<String, dynamic>> _fetchFromPiped(String videoId) async {
-    for (final instance in _pipedInstances) {
+  Future<List<DownloadFormatOption>> getFormatsForVideo(Video video) async {
+    final yt = YoutubeExplode();
+    try {
+      StreamManifest manifest;
       try {
-        final uri = Uri.parse('$instance/streams/$videoId');
-        final resp = await http.get(uri).timeout(const Duration(seconds: 6));
-        if (resp.statusCode == 200) {
-          final data = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
-          final audioStreams = (data['audioStreams'] as List?) ?? [];
-          final videoStreams = (data['videoStreams'] as List?) ?? [];
-
-          if (audioStreams.isNotEmpty || videoStreams.isNotEmpty) {
-            return data;
-          }
-        }
-      } catch (e) {
-        debugPrint('Fallo instancia $instance: $e');
+        // Clientes móviles iOS y Android evitan bloqueos 403 en streams de música
+        manifest = await yt.videos.streamsClient.getManifest(
+          video.id,
+          ytClients: [
+            YoutubeApiClient.ios,
+            YoutubeApiClient.android,
+            YoutubeApiClient.safari,
+          ],
+        );
+      } catch (_) {
+        manifest = await yt.videos.streamsClient.getManifest(video.id);
       }
-    }
-    throw Exception('No se pudo conectar a los servidores de extracción.');
-  }
 
-  Future<Map<String, dynamic>> analyzeYoutubeUrl(String url) async {
-    final videoId = extractVideoId(url);
-    if (videoId == null) {
-      throw Exception('Entra primero a un video válido de YouTube.');
-    }
+      final List<DownloadFormatOption> options = [];
 
-    final data = await _fetchFromPiped(videoId);
+      // 1. Opciones de Audio (M4A y MP3)
+      final audioStreams = manifest.audioOnly.sortByBitrate();
+      if (audioStreams.isNotEmpty) {
+        final bestAudio = audioStreams.first;
+        final kbps = bestAudio.bitrate.kiloBitsPerSecond.round();
+        final mb = bestAudio.size.totalMegaBytes.toStringAsFixed(1);
 
-    final title = (data['title'] as String?) ?? 'Canción de YouTube';
-    final author = (data['uploader'] as String?) ?? 'Artista';
-    final durationSec = (data['duration'] as int?) ?? 0;
-    final thumbUrl = (data['thumbnailUrl'] as String?) ?? 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
-
-    final videoMeta = VideoMetadataModel(
-      id: videoId,
-      title: title,
-      author: author,
-      thumbnailUrl: thumbUrl,
-      durationSeconds: durationSec,
-    );
-
-    final List<DownloadFormatOption> options = [];
-
-    // 1. Audio Streams (M4A / MP3)
-    final audioStreams = List<Map<String, dynamic>>.from(data['audioStreams'] ?? []);
-    audioStreams.sort((a, b) => ((b['bitrate'] ?? 0) as int).compareTo((a['bitrate'] ?? 0) as int));
-
-    if (audioStreams.isNotEmpty) {
-      final best = audioStreams.first;
-      final kbps = (((best['bitrate'] ?? 128000) as int) / 1000).round();
-      final contentLen = (best['contentLength'] as int?) ?? 0;
-
-      options.add(DownloadFormatOption(
-        format: 'M4A',
-        qualityLabel: 'Audio Original ($kbps kbps) • M4A',
-        downloadUrl: best['url'] as String,
-        sizeBytes: contentLen,
-        userAgent: kChromeDesktopUserAgent,
-      ));
-
-      options.add(DownloadFormatOption(
-        format: 'MP3',
-        qualityLabel: 'Audio Alta Calidad ($kbps kbps) • MP3',
-        downloadUrl: best['url'] as String,
-        sizeBytes: contentLen,
-        userAgent: kChromeDesktopUserAgent,
-      ));
-
-      if (audioStreams.length > 1) {
-        final light = audioStreams.last;
-        final lightKbps = (((light['bitrate'] ?? 64000) as int) / 1000).round();
         options.add(DownloadFormatOption(
           format: 'M4A',
-          qualityLabel: 'Audio Ligero ($lightKbps kbps) • M4A',
-          downloadUrl: light['url'] as String,
-          sizeBytes: (light['contentLength'] as int?) ?? 0,
-          userAgent: kChromeDesktopUserAgent,
+          qualityLabel: 'Audio Original ($kbps kbps • $mb MB) • M4A',
+          streamInfo: bestAudio,
+          sizeBytes: bestAudio.size.totalBytes,
         ));
-      }
-    }
-
-    // 2. Video Streams (MP4 con calidad)
-    final videoStreams = List<Map<String, dynamic>>.from(data['videoStreams'] ?? []);
-    final seenQualities = <String>{};
-    for (final v in videoStreams) {
-      final q = (v['quality'] as String?) ?? '720p';
-      final format = (v['format'] as String? ?? '').toUpperCase();
-      if (format.contains('MP4') && !seenQualities.contains(q) && v['url'] != null) {
-        seenQualities.add(q);
-        final len = (v['contentLength'] as int?) ?? 0;
-        final mb = len > 0 ? ' (${(len / (1024 * 1024)).toStringAsFixed(1)} MB)' : '';
 
         options.add(DownloadFormatOption(
-          format: 'MP4',
-          qualityLabel: 'Video $q$mb • MP4',
-          downloadUrl: v['url'] as String,
-          sizeBytes: len,
-          userAgent: kChromeDesktopUserAgent,
+          format: 'MP3',
+          qualityLabel: 'Audio Alta Calidad ($kbps kbps • $mb MB) • MP3',
+          streamInfo: bestAudio,
+          sizeBytes: bestAudio.size.totalBytes,
         ));
+
+        if (audioStreams.length > 1) {
+          final lowAudio = audioStreams.last;
+          final lowKbps = lowAudio.bitrate.kiloBitsPerSecond.round();
+          final lowMb = lowAudio.size.totalMegaBytes.toStringAsFixed(1);
+          options.add(DownloadFormatOption(
+            format: 'M4A',
+            qualityLabel: 'Audio Ligero ($lowKbps kbps • $lowMb MB) • M4A',
+            streamInfo: lowAudio,
+            sizeBytes: lowAudio.size.totalBytes,
+          ));
+        }
       }
-    }
 
-    if (options.isEmpty) {
-      throw Exception('El servidor bloqueó la descarga. Intenta de nuevo más tarde.');
-    }
+      // 2. Opciones de Video MP4 por calidad (1080p, 720p, 480p, 360p...)
+      final muxedStreams = manifest.muxed.sortByVideoQuality();
+      final seenQualities = <String>{};
+      for (final s in muxedStreams) {
+        final q = s.qualityLabel;
+        if (!seenQualities.contains(q)) {
+          seenQualities.add(q);
+          final mb = s.size.totalMegaBytes.toStringAsFixed(1);
+          options.add(DownloadFormatOption(
+            format: 'MP4',
+            qualityLabel: 'Video $q ($mb MB) • MP4',
+            streamInfo: s,
+            sizeBytes: s.size.totalBytes,
+          ));
+        }
+      }
 
-    return {
-      'video': videoMeta,
-      'options': options,
-    };
+      if (options.isEmpty) {
+        throw Exception('No se encontraron formatos disponibles para este video.');
+      }
+
+      return options;
+    } finally {
+      yt.close();
+    }
   }
 
   Future<Directory> _resolveDownloadDirectory() async {
@@ -511,23 +457,27 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> startDownload({
-    required VideoMetadataModel video,
+    required Video video,
     required DownloadFormatOption option,
   }) async {
     final taskId = DateTime.now().millisecondsSinceEpoch.toString();
+    final thumbUrl = video.thumbnails.highResUrl;
 
     final task = ActiveDownloadTask(
       id: taskId,
       title: video.title,
       format: option.format,
       qualityLabel: option.qualityLabel,
-      thumbnailUrl: video.thumbnailUrl,
+      thumbnailUrl: thumbUrl,
       progress: 0.0,
       status: 'Descargando...',
     );
 
     activeDownloads.insert(0, task);
     notifyListeners();
+
+    final yt = YoutubeExplode();
+    IOSink? fileSink;
 
     try {
       final dir = await _resolveDownloadDirectory();
@@ -539,25 +489,30 @@ class AppState extends ChangeNotifier {
       final ext = option.format.toLowerCase();
       final savePath = '${dir.path}/${finalName}_$taskId.$ext';
 
-      await _dio.download(
-        option.downloadUrl,
-        savePath,
-        options: Options(
-          headers: {
-            'User-Agent': kChromeDesktopUserAgent,
-          },
-        ),
-        onReceiveProgress: (received, total) {
-          final expectedTotal = total > 0 ? total : option.sizeBytes;
-          if (expectedTotal > 0) {
-            task.progress = (received / expectedTotal).clamp(0.0, 1.0);
-            notifyListeners();
-          }
-        },
-      );
+      final outFile = File(savePath);
+      if (await outFile.exists()) {
+        await outFile.delete();
+      }
 
-      final savedFile = File(savePath);
-      final actualBytes = await savedFile.length();
+      // Usar el cliente de streams nativo de YoutubeExplode (maneja bloques y tokens anti-403)
+      final stream = yt.videos.streamsClient.get(option.streamInfo);
+      fileSink = outFile.openWrite();
+
+      int receivedBytes = 0;
+      final totalBytes = option.sizeBytes > 0 ? option.sizeBytes : 1;
+
+      await for (final chunk in stream) {
+        fileSink.add(chunk);
+        receivedBytes += chunk.length;
+        task.progress = (receivedBytes / totalBytes).clamp(0.0, 1.0);
+        notifyListeners();
+      }
+
+      await fileSink.flush();
+      await fileSink.close();
+      fileSink = null;
+
+      final actualBytes = await outFile.length();
 
       final mediaItem = MediaItemModel(
         id: taskId,
@@ -566,8 +521,8 @@ class AppState extends ChangeNotifier {
         filePath: savePath,
         format: option.format,
         qualityLabel: option.qualityLabel,
-        thumbnailUrl: video.thumbnailUrl,
-        durationSeconds: video.durationSeconds,
+        thumbnailUrl: thumbUrl,
+        durationSeconds: video.duration?.inSeconds ?? 0,
         fileSizeBytes: actualBytes,
         addedAt: DateTime.now(),
       );
@@ -579,12 +534,13 @@ class AppState extends ChangeNotifier {
       notifyListeners();
 
       fetchLyricsForTrack(mediaItem);
-    } on DioException catch (_) {
+    } catch (e) {
+      debugPrint('Error en descarga: $e');
       task.status = 'El servidor bloqueó la descarga. Intenta de nuevo más tarde.';
       notifyListeners();
-    } catch (_) {
-      task.status = 'El servidor bloqueó la descarga. Intenta de nuevo más tarde.';
-      notifyListeners();
+    } finally {
+      await fileSink?.close();
+      yt.close();
     }
   }
 
