@@ -45,20 +45,20 @@ class _AppleMusicYTAppState extends State<AppleMusicYTApp> {
         listenable: _appState,
         builder: (context, _) {
           return Scaffold(
-            body: IndexedStack(
-              index: _selectedIndex,
-              children: [
-                YoutubeBrowserTab(appState: _appState),
-                LibraryPlaylistsTab(appState: _appState),
-                FileManagerTab(appState: _appState),
-              ],
+            body: SafeArea(
+              child: IndexedStack(
+                index: _selectedIndex,
+                children: [
+                  YoutubeBrowserTab(appState: _appState),
+                  LibraryPlaylistsTab(appState: _appState),
+                  FileManagerTab(appState: _appState),
+                ],
+              ),
             ),
             bottomNavigationBar: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Mini-reproductor flotante estilo Apple Music encima de las pestañas
                 AppleMusicMiniPlayer(appState: _appState),
-
                 NavigationBar(
                   height: 66,
                   backgroundColor: const Color(0xFF18181B),
@@ -81,7 +81,7 @@ class _AppleMusicYTAppState extends State<AppleMusicYTApp> {
                     NavigationDestination(
                       icon: Badge(
                         isLabelVisible: _appState.activeDownloads
-                            .any((d) => d.progress < 1.0 && !d.status.startsWith('Error')),
+                            .any((d) => d.status == 'Descargando...'),
                         child: const Icon(Icons.folder_outlined),
                       ),
                       selectedIcon: const Icon(Icons.folder_rounded, color: Colors.pinkAccent),
